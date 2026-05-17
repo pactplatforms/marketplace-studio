@@ -1,7 +1,0 @@
-{
-    "name": "com.pactplatforms.marketplace-studio.runtime",
-    "rootNamespace": "Pact",
-    "references": [],
-    "includePlatforms": [],
-    "excludePlatforms": []
-}
