@@ -1,0 +1,11 @@
+{
+    "name": "com.pactplatforms.marketplace-studio.editor",
+    "rootNamespace": "Pact",
+    "references": [
+        "com.pactplatforms.marketplace-studio.runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": []
+}
