@@ -1,0 +1,5 @@
+{
+  "name": "Pact.Marketplace.Runtime",
+  "rootNamespace": "Pact.Marketplace",
+  "autoReferenced": true
+}
