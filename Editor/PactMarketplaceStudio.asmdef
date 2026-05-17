@@ -1,5 +1,10 @@
 {
-    "name": "Pact.Marketplace.Editor",
-    "includePlatforms": ["Editor"],
-    "excludePlatforms": []
+  "name": "Pact.Marketplace.Editor",
+  "rootNamespace": "Pact.Marketplace",
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "references": [
+    "Pact.Marketplace.Runtime"
+  ],
+  "autoReferenced": true
 }
