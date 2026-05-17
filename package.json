@@ -1,0 +1,12 @@
+{
+    "name": "com.pactplatforms.marketplace-studio",
+    "version": "1.0.0",
+    "displayName": "PACT Marketplace Studio",
+    "description": "Upload 3D assets to the PACT AR Marketplace directly from Unity.",
+    "unity": "2021.3",
+    "author": {
+        "name": "PACT Platforms",
+        "email": "hello@pactplatforms.com",
+        "url": "https://pactplatforms.com"
+    }
+}
