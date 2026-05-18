@@ -1,9 +1,9 @@
 {
   "name": "Pact.Marketplace.Editor",
   "rootNamespace": "Pact.Marketplace",
-  "includePlatforms": ["Editor"],
+  "includePlatforms": [
+    "Editor"
+  ],
   "autoReferenced": true,
-  "references": [
-    "Pact.Marketplace.Runtime"
-  ]
+  "references": []
 }
