@@ -11,55 +11,36 @@ namespace Pact.Marketplace
 {
     public class PactMarketplaceStudio : EditorWindow
     {
-        private const string LAMBDA_URL =
-            "https://73cy1palri.execute-api.us-east-1.amazonaws.com/default/pact-generate_presigned_upload";
+        private const string LAMBDA_URL = "https://73cy1palri.execute-api.us-east-1.amazonaws.com/default/pact-generate_presigned_upload";
 
         private string assetId = "my_asset";
         private string userEmail = "";
         private string creatorName = "";
-
-        private string[] categories =
-        {
-            "Art","Fashion","Furniture","Architecture","Gaming",
-            "Animation","Characters","Environment","Vehicles",
-            "Weapons","Animals","Vegetation"
-        };
-
+        private string[] categories = { "Art", "Fashion", "Furniture", "Architecture", "Gaming", "Animation", "Characters", "Environment", "Vehicles", "Weapons", "Animals", "Vegetation" };
         private int categoryIndex = 0;
         private GameObject targetPrefab;
         private string status = "Ready";
 
-        private const int TIMEOUT_SECONDS = 30;
-        private const int MAX_RETRIES = 3;
-
         [MenuItem("Pact/Marketplace Studio")]
-        public static void ShowWindow()
-        {
-            GetWindow<PactMarketplaceStudio>("Marketplace Studio");
-        }
+        public static void ShowWindow() => GetWindow<PactMarketplaceStudio>("Marketplace Studio");
 
         private void OnGUI()
         {
             GUILayout.Label("Pact Publisher", EditorStyles.boldLabel);
             EditorGUILayout.Space(5);
 
-            targetPrefab = (GameObject)EditorGUILayout.ObjectField(
-                "3D Model:", targetPrefab, typeof(GameObject), false);
-
+            targetPrefab = (GameObject)EditorGUILayout.ObjectField("3D Model:", targetPrefab, typeof(GameObject), false);
             assetId = EditorGUILayout.TextField("Asset ID:", assetId);
-            userEmail = EditorGUILayout.TextField("Email:", userEmail);
+            userEmail = EditorGUILayout.TextField("Creator Email:", userEmail);
             creatorName = EditorGUILayout.TextField("Creator Name:", creatorName);
-
             categoryIndex = EditorGUILayout.Popup("Category:", categoryIndex, categories);
 
             EditorGUILayout.Space(10);
 
             if (GUILayout.Button("BUILD & PUBLISH", GUILayout.Height(40)))
             {
-                if (targetPrefab != null && userEmail.Contains("@"))
-                    _ = BuildAndPublish();
-                else
-                    EditorUtility.DisplayDialog("Error", "Missing prefab or email", "OK");
+                if (targetPrefab != null && userEmail.Contains("@")) _ = BuildAndPublish();
+                else EditorUtility.DisplayDialog("Error", "Check prefab and email", "OK");
             }
 
             EditorGUILayout.HelpBox("Status: " + status, MessageType.Info);
@@ -69,130 +50,101 @@ namespace Pact.Marketplace
         {
             try
             {
-                string cleanId = assetId.ToLower().Trim().Replace(" ", "_");
-                status = "Analyzing mesh...";
+                // 1. THUMBNAIL RENDERING (Ingestion Logic)
+                status = "Rendering Thumbnail...";
+                byte[] thumbBytes = CaptureThumbnail(targetPrefab);
 
-                int triangles = 0;
-                foreach (var mesh in targetPrefab.GetComponentsInChildren<MeshFilter>())
-                {
-                    if (mesh.sharedMesh != null)
-                        triangles += mesh.sharedMesh.triangles.Length / 3;
-                }
-
-                status = "Building AssetBundle...";
-                string buildPath = "Library/PactAssetBundles/iOS";
+                // 2. BUNDLE GENERATION (Ingestion Logic)
+                status = "Building iOS Bundle...";
+                string buildPath = Path.Combine(Application.temporaryCachePath, "PactTemp");
                 if (Directory.Exists(buildPath)) Directory.Delete(buildPath, true);
                 Directory.CreateDirectory(buildPath);
 
-                string prefabPath = AssetDatabase.GetAssetPath(targetPrefab);
-                AssetImporter importer = AssetImporter.GetAtPath(prefabPath);
-                importer.SetAssetBundleNameAndVariant(cleanId, "");
+                string bundleName = assetId.ToLower().Replace(" ", "_") + ".unity3d";
+                AssetBundleBuild[] build = new AssetBundleBuild[1];
+                build[0].assetBundleName = bundleName;
+                build[0].assetNames = new string[] { AssetDatabase.GetAssetPath(targetPrefab) };
 
-                BuildPipeline.BuildAssetBundles(
-                    buildPath,
-                    BuildAssetBundleOptions.None,
-                    BuildTarget.iOS
-                );
+                BuildPipeline.BuildAssetBundles(buildPath, build, BuildAssetBundleOptions.None, BuildTarget.iOS);
+                byte[] bundleBytes = File.ReadAllBytes(Path.Combine(buildPath, bundleName));
 
-                string rawBundlePath = Path.Combine(buildPath, cleanId);
-                string finalBundlePath = rawBundlePath + ".unitybundle";
+                // 3. UPLOAD & VERIFICATION
+                status = "Requesting Upload Access...";
+                var payload = new RequestPayload { assetId = assetId, email = userEmail, creatorName = creatorName };
+                string responseJson = await PostRequest(LAMBDA_URL, JsonUtility.ToJson(payload));
+                var res = JsonUtility.FromJson<Response>(responseJson);
 
-                if (!File.Exists(rawBundlePath))
-                {
-                    status = "Bundle build failed";
-                    return;
-                }
+                status = "Uploading Files...";
+                await UploadFile(res.bundleUrl, bundleBytes, "application/octet-stream");
+                await UploadFile(res.thumbnailUrl, thumbBytes, "image/png");
+                
+                var meta = new Metadata { Token = res.token, AssetID = assetId, Email = userEmail, CreatorName = creatorName, Category = categories[categoryIndex] };
+                await UploadFile(res.jsonUrl, Encoding.UTF8.GetBytes(JsonUtility.ToJson(meta)), "application/json");
 
-                if (File.Exists(finalBundlePath)) File.Delete(finalBundlePath);
-                File.Move(rawBundlePath, finalBundlePath);
-                importer.SetAssetBundleNameAndVariant("", "");
-
-                byte[] bundleBytes = File.ReadAllBytes(finalBundlePath);
-
-                status = "Requesting upload URLs...";
-                string payload = JsonUtility.ToJson(new RequestPayload
-                {
-                    assetId = cleanId,
-                    email = userEmail,
-                    creatorName = creatorName
-                });
-
-                string lambdaResponse = await PostWithRetry(LAMBDA_URL, payload);
-                if (lambdaResponse == null) { status = "Lambda connection failed"; return; }
-
-                Response res = JsonUtility.FromJson<Response>(lambdaResponse);
-                if (res == null || string.IsNullOrEmpty(res.bundleUrl)) { status = "Invalid response"; return; }
-
-                status = "Uploading bundle...";
-                bool bundleOk = await UploadWithRetry(res.bundleUrl, bundleBytes, "application/octet-stream");
-                if (!bundleOk) { status = "Bundle upload failed"; return; }
-
-                status = "Uploading metadata...";
-                string json = JsonUtility.ToJson(new Metadata
-                {
-                    Token = res.token,
-                    AssetID = cleanId,
-                    Email = userEmail,
-                    CreatorName = creatorName,
-                    Category = categories[categoryIndex],
-                    TriangleCount = triangles
-                });
-
-                bool metaOk = await UploadWithRetry(res.jsonUrl, Encoding.UTF8.GetBytes(json), "application/json");
-                if (!metaOk) { status = "Metadata upload failed"; return; }
-
-                status = "SUCCESS";
-                EditorUtility.DisplayDialog("Pact", "Upload complete! Check email to verify.", "OK");
+                status = "Success!";
+                EditorUtility.DisplayDialog("Pact", "Asset Published Successfully!", "OK");
             }
-            catch (Exception ex)
-            {
-                status = "Error: " + ex.Message;
-                Debug.LogException(ex);
-            }
+            catch (Exception e) { status = "Error: " + e.Message; Debug.LogError(e); }
         }
 
-        private async Task<string> PostWithRetry(string url, string json)
+        // --- ISOLATED THUMBNAIL LOGIC ---
+        private byte[] CaptureThumbnail(GameObject prefab)
         {
-            for (int i = 0; i < MAX_RETRIES; i++)
-            {
-                using (var req = new UnityWebRequest(url, "POST"))
-                {
-                    req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
-                    req.downloadHandler = new DownloadHandlerBuffer();
-                    req.SetRequestHeader("Content-Type", "application/json");
-                    req.timeout = TIMEOUT_SECONDS;
+            const int SIZE = 512;
+            GameObject root = new GameObject("P_Root");
+            GameObject p = Instantiate(prefab, Vector3.zero, Quaternion.identity);
+            p.transform.SetParent(root.transform);
+            
+            // Set layer to 31 for isolation
+            SetLayerRecursively(p, 31);
 
-                    var op = req.SendWebRequest();
-                    while (!op.isDone) await Task.Delay(100);
+            Renderer[] rs = p.GetComponentsInChildren<Renderer>();
+            Bounds b = rs[0].bounds;
+            foreach (var r in rs) b.Encapsulate(r.bounds);
 
-                    if (req.result == UnityWebRequest.Result.Success) return req.downloadHandler.text;
-                    await Task.Delay(1000 * (i + 1));
-                }
-            }
-            return null;
+            GameObject cObj = new GameObject("P_Cam");
+            Camera c = cObj.AddComponent<Camera>();
+            c.backgroundColor = new Color(0, 0, 0, 0);
+            c.clearFlags = CameraClearFlags.SolidColor;
+            c.cullingMask = 1 << 31;
+            
+            float rad = b.extents.magnitude;
+            c.transform.position = b.center + new Vector3(-1, 0.6f, -1).normalized * (rad * 2.2f);
+            c.transform.LookAt(b.center);
+
+            RenderTexture rt = new RenderTexture(SIZE, SIZE, 24);
+            c.targetTexture = rt;
+            RenderTexture.active = rt;
+            Texture2D tex = new Texture2D(SIZE, SIZE, TextureFormat.RGBA32, false);
+            c.Render();
+            tex.ReadPixels(new Rect(0, 0, SIZE, SIZE), 0, 0);
+            tex.Apply();
+
+            byte[] bytes = tex.EncodeToPNG();
+            DestroyImmediate(rt); DestroyImmediate(tex); DestroyImmediate(cObj); DestroyImmediate(root);
+            return bytes;
         }
 
-        private async Task<bool> UploadWithRetry(string url, byte[] data, string contentType)
-        {
-            for (int i = 0; i < MAX_RETRIES; i++)
-            {
-                using (var req = UnityWebRequest.Put(url, data))
-                {
-                    req.SetRequestHeader("Content-Type", contentType);
-                    req.timeout = TIMEOUT_SECONDS;
-                    var op = req.SendWebRequest();
-                    while (!op.isDone) await Task.Delay(100);
+        private void SetLayerRecursively(GameObject o, int l) { o.layer = l; foreach (Transform t in o.transform) SetLayerRecursively(t.gameObject, l); }
 
-                    if (req.result == UnityWebRequest.Result.Success) return true;
-                    await Task.Delay(1000 * (i + 1));
-                }
-            }
-            return false;
+        private async Task<string> PostRequest(string url, string json) {
+            using var r = new UnityWebRequest(url, "POST");
+            r.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+            r.downloadHandler = new DownloadHandlerBuffer();
+            r.SetRequestHeader("Content-Type", "application/json");
+            await r.SendWebRequest();
+            return r.downloadHandler.text;
+        }
+
+        private async Task UploadFile(string url, byte[] data, string ct) {
+            using var r = UnityWebRequest.Put(url, data);
+            r.SetRequestHeader("Content-Type", ct);
+            await r.SendWebRequest();
         }
 
         [Serializable] class RequestPayload { public string assetId, email, creatorName; }
-        [Serializable] class Response { public string bundleUrl, jsonUrl, token; }
-        [Serializable] class Metadata { public string Token, AssetID, Email, CreatorName, Category; public int TriangleCount; }
+        [Serializable] class Response { public string bundleUrl, jsonUrl, thumbnailUrl, token; }
+        [Serializable] class Metadata { public string Token, AssetID, Email, CreatorName, Category; }
     }
 }
 #endif
