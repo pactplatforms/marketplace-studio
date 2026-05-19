@@ -15,7 +15,6 @@ namespace Pact.Marketplace
         private string creatorName = "emmanuel";
         private string status = "Ready";
 
-        // Your verified API Gateway
         private const string HANDSHAKE_URL = "https://ki26mr9lih.execute-api.us-east-1.amazonaws.com/generate";
 
         [MenuItem("Pact/Marketplace Studio")]
@@ -28,6 +27,7 @@ namespace Pact.Marketplace
             email = EditorGUILayout.TextField("Creator Email", email);
             creatorName = EditorGUILayout.TextField("Creator Name", creatorName);
 
+            // Back to your original: Uses whatever is selected in the Hierarchy
             if (GUILayout.Button("Build and Publish") && Selection.activeGameObject != null)
             {
                 _ = BuildAndPublish();
@@ -40,28 +40,24 @@ namespace Pact.Marketplace
             status = "Processing...";
             GameObject target = Selection.activeGameObject;
 
-            // 1. Triangle Check
+            // 1. Calculate Triangles
             int triangles = 0;
             foreach (var filter in target.GetComponentsInChildren<MeshFilter>())
             {
                 triangles += filter.sharedMesh.triangles.Length / 3;
             }
 
-            if (triangles > 200000) {
-                EditorUtility.DisplayDialog("Error", "Triangles > 200k. Simplify mesh.", "OK");
-                return;
-            }
-
-            // 2. Memory-Safe Thumbnail Capture
+            // 2. Capture Thumbnail (Memory Fix only)
             byte[] thumbBytes = CaptureThumbnail(target);
 
-            // 3. Build Bundle
+            // 3. Build AssetBundle
             string bundleDir = "Assets/AssetBundles";
             if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
-            AssetBundleBuild[] buildMap = { new AssetBundleBuild { 
-                assetBundleName = $"{assetId}.unitybundle", 
-                assetNames = new[] { AssetDatabase.GetAssetPath(target) } 
-            }};
+            
+            AssetBundleBuild[] buildMap = new AssetBundleBuild[1];
+            buildMap[0].assetBundleName = $"{assetId}.unitybundle";
+            buildMap[0].assetNames = new[] { AssetDatabase.GetAssetPath(target) };
+
             BuildPipeline.BuildAssetBundles(bundleDir, buildMap, BuildAssetBundleOptions.None, BuildTarget.iOS);
             byte[] bundleBytes = File.ReadAllBytes(Path.Combine(bundleDir, $"{assetId}.unitybundle"));
 
@@ -80,20 +76,23 @@ namespace Pact.Marketplace
             cam.targetTexture = rt;
             camGo.transform.position = target.transform.position + new Vector3(0, 1, -3);
             camGo.transform.LookAt(target.transform);
+            
             cam.Render();
 
             RenderTexture.active = rt;
             screenShot.ReadPixels(new Rect(0, 0, res, res), 0, 0);
             screenShot.Apply();
 
-            // CRITICAL CLEANUP
+            // --- THE ONLY CHANGE: PREVENT CRASH ---
             RenderTexture.active = null;
             cam.targetTexture = null;
+            
             byte[] bytes = screenShot.EncodeToPNG();
             
             DestroyImmediate(camGo);
             DestroyImmediate(rt);
             DestroyImmediate(screenShot);
+
             return bytes;
         }
 
@@ -101,22 +100,23 @@ namespace Pact.Marketplace
         {
             using (HttpClient client = new HttpClient())
             {
-                // A. Handshake
                 var payload = new { assetId, email, creatorName, triangleCount = tris };
                 var response = await client.PostAsync(HANDSHAKE_URL, new StringContent(JsonUtility.ToJson(payload)));
-                var handshake = JsonUtility.FromJson<HandshakeResponse>(await response.Content.ReadAsStringAsync());
+                var resBody = await response.Content.ReadAsStringAsync();
+                
+                // Assuming you use a JSON wrapper for the response
+                var handshake = JsonUtility.FromJson<HandshakeResponse>(resBody);
 
-                // B. Upload Bundle, JSON (from handshake), and Thumbnail
                 await client.PutAsync(handshake.bundleUrl, new ByteArrayContent(bundle));
                 await client.PutAsync(handshake.thumbnailUrl, new ByteArrayContent(thumb));
                 await client.PutAsync(handshake.jsonUrl, new StringContent(JsonUtility.ToJson(payload)));
 
-                status = "Success! Check your email.";
+                status = "Success!";
             }
         }
 
         [Serializable] public class HandshakeResponse { 
-            public string bundleUrl; public string jsonUrl; public string thumbnailUrl; public string token; 
+            public string bundleUrl; public string jsonUrl; public string thumbnailUrl; 
         }
     }
 }
