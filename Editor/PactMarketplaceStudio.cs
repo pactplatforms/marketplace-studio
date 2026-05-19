@@ -38,18 +38,11 @@ namespace Pact.Marketplace
 
             if (GUILayout.Button("BUILD & PUBLISH", GUILayout.Height(40)))
             {
-                if (targetPrefab == null)
+                if (targetPrefab == null || !userEmail.Contains("@"))
                 {
-                    EditorUtility.DisplayDialog("Error", "Assign a prefab.", "OK");
+                    EditorUtility.DisplayDialog("Error", "Check prefab and email.", "OK");
                     return;
                 }
-
-                if (!userEmail.Contains("@"))
-                {
-                    EditorUtility.DisplayDialog("Error", "Invalid email.", "OK");
-                    return;
-                }
-
                 _ = BuildAndPublish();
             }
 
@@ -69,7 +62,6 @@ namespace Pact.Marketplace
 
                 status = "Building AssetBundle...";
                 Repaint();
-
                 string buildPath = Path.Combine(Application.temporaryCachePath, "PactTemp");
                 if (Directory.Exists(buildPath)) Directory.Delete(buildPath, true);
                 Directory.CreateDirectory(buildPath);
@@ -79,52 +71,29 @@ namespace Pact.Marketplace
                 builds[0].assetBundleName = bundleName;
                 builds[0].assetNames = new[] { AssetDatabase.GetAssetPath(targetPrefab) };
 
-                BuildPipeline.BuildAssetBundles(
-                    buildPath,
-                    builds,
-                    BuildAssetBundleOptions.ForceRebuildAssetBundle | BuildAssetBundleOptions.DisableWriteTypeTree,
-                    BuildTarget.iOS
-                );
-
+                BuildPipeline.BuildAssetBundles(buildPath, builds, BuildAssetBundleOptions.ForceRebuildAssetBundle | BuildAssetBundleOptions.DisableWriteTypeTree, BuildTarget.iOS);
+                
                 string bundlePath = Path.Combine(buildPath, bundleName);
-                if (!File.Exists(bundlePath)) throw new Exception("AssetBundle build failed.");
+                if (!File.Exists(bundlePath)) throw new Exception("Build failed.");
                 byte[] bundleBytes = File.ReadAllBytes(bundlePath);
 
                 status = "Syncing with Server...";
                 Repaint();
-
                 RequestPayload payload = new RequestPayload { assetId = cleanId, email = userEmail, creatorName = creatorName };
                 string responseJson = await PostRequest(LAMBDA_URL, JsonUtility.ToJson(payload));
-                Response response = JsonUtility.FromJson<Response>(responseJson);
+                Response res = JsonUtility.FromJson<Response>(responseJson);
 
-                if (string.IsNullOrEmpty(response.bundleUrl)) throw new Exception("Invalid server response.");
-
-                status = "Uploading bundle...";
+                status = "Uploading...";
                 Repaint();
-                await UploadFile(response.bundleUrl, bundleBytes, "application/octet-stream");
+                await UploadFile(res.bundleUrl, bundleBytes, "application/octet-stream");
+                await UploadFile(res.thumbnailUrl, thumbBytes, "image/png");
 
-                status = "Uploading thumbnail...";
-                Repaint();
-                await UploadFile(response.thumbnailUrl, thumbBytes, "image/png");
-
-                status = "Finalizing metadata...";
-                Repaint();
-                Metadata meta = new Metadata
-                {
-                    Token = response.token,
-                    AssetID = cleanId,
-                    Email = userEmail,
-                    CreatorName = creatorName,
-                    UnityVersion = Application.unityVersion,
-                    Platform = "iOS",
-                    UploadTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-                };
-
-                await UploadFile(response.jsonUrl, Encoding.UTF8.GetBytes(JsonUtility.ToJson(meta)), "application/json");
+                Metadata meta = new Metadata { Token = res.token, AssetID = cleanId, Email = userEmail, CreatorName = creatorName };
+                await UploadFile(res.jsonUrl, Encoding.UTF8.GetBytes(JsonUtility.ToJson(meta)), "application/json");
 
                 status = "Success!";
                 Repaint();
-                EditorUtility.DisplayDialog("Success", "Upload completed. Check your email to verify.", "OK");
+                EditorUtility.DisplayDialog("Success", "Check email to verify.", "OK");
             }
             catch (Exception e)
             {
@@ -136,46 +105,36 @@ namespace Pact.Marketplace
 
         private byte[] CaptureThumbnail(GameObject prefab)
         {
-            const int SIZE = 512;
-            RenderTexture rt = new RenderTexture(SIZE, SIZE, 24);
+            RenderTexture rt = new RenderTexture(512, 512, 24);
             GameObject root = new GameObject("ThumbRoot");
             GameObject instance = Instantiate(prefab, Vector3.zero, Quaternion.identity, root.transform);
-            
             SetLayerRecursively(instance, 31);
 
-            GameObject camObj = new GameObject("ThumbCam");
-            Camera cam = camObj.AddComponent<Camera>();
-            cam.clearFlags = CameraClearFlags.SolidColor;
+            Camera cam = new GameObject("ThumbCam").AddComponent<Camera>();
             cam.backgroundColor = new Color(0, 0, 0, 0);
+            cam.clearFlags = CameraClearFlags.SolidColor;
             cam.targetTexture = rt;
             cam.cullingMask = 1 << 31;
 
-            Bounds bounds = new Bounds(instance.transform.position, Vector3.zero);
-            foreach (Renderer r in instance.GetComponentsInChildren<Renderer>()) bounds.Encapsulate(r.bounds);
-
-            float size = Mathf.Max(bounds.size.x, bounds.size.y, bounds.size.z);
-            cam.transform.position = bounds.center + new Vector3(0, size * 0.5f, -size * 2f);
-            cam.transform.LookAt(bounds.center);
+            Bounds b = new Bounds(instance.transform.position, Vector3.zero);
+            foreach (Renderer r in instance.GetComponentsInChildren<Renderer>()) b.Encapsulate(r.bounds);
+            float s = Mathf.Max(b.size.x, b.size.y, b.size.z);
+            cam.transform.position = b.center + new Vector3(0, s * 0.5f, -s * 2f);
+            cam.transform.LookAt(b.center);
 
             cam.Render();
-
             RenderTexture.active = rt;
-            Texture2D tex = new Texture2D(SIZE, SIZE, TextureFormat.RGBA32, false);
-            tex.ReadPixels(new Rect(0, 0, SIZE, SIZE), 0, 0);
+            Texture2D tex = new Texture2D(512, 512, TextureFormat.RGBA32, false);
+            tex.ReadPixels(new Rect(0, 0, 512, 512), 0, 0);
             tex.Apply();
 
-            // CLEANUP SEQUENCE
+            // CLEANUP
             cam.targetTexture = null;
             RenderTexture.active = null;
             rt.Release();
 
             byte[] bytes = tex.EncodeToPNG();
-
-            DestroyImmediate(rt);
-            DestroyImmediate(tex);
-            DestroyImmediate(camObj);
-            DestroyImmediate(root);
-
+            DestroyImmediate(rt); DestroyImmediate(tex); DestroyImmediate(cam.gameObject); DestroyImmediate(root);
             return bytes;
         }
 
@@ -192,11 +151,8 @@ namespace Pact.Marketplace
                 r.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
                 r.downloadHandler = new DownloadHandlerBuffer();
                 r.SetRequestHeader("Content-Type", "application/json");
-
-                var operation = r.SendWebRequest();
-                while (!operation.isDone) await Task.Yield();
-
-                if (r.result != UnityWebRequest.Result.Success) throw new Exception(r.error);
+                var op = r.SendWebRequest();
+                while (!op.isDone) await Task.Yield();
                 return r.downloadHandler.text;
             }
         }
@@ -206,15 +162,14 @@ namespace Pact.Marketplace
             using (UnityWebRequest r = UnityWebRequest.Put(url, data))
             {
                 r.SetRequestHeader("Content-Type", contentType);
-                var operation = r.SendWebRequest();
-                while (!operation.isDone) await Task.Yield();
-                if (r.result != UnityWebRequest.Result.Success) throw new Exception(r.error);
+                var op = r.SendWebRequest();
+                while (!op.isDone) await Task.Yield();
             }
         }
 
-        [Serializable] class RequestPayload { public string assetId; public string email; public string creatorName; }
-        [Serializable] class Response { public string bundleUrl; public string thumbnailUrl; public string jsonUrl; public string token; }
-        [Serializable] class Metadata { public string Token; public string AssetID; public string Email; public string CreatorName; public string UnityVersion; public string Platform; public long UploadTimestamp; }
+        [Serializable] class RequestPayload { public string assetId, email, creatorName; }
+        [Serializable] class Response { public string bundleUrl, thumbnailUrl, jsonUrl, token; }
+        [Serializable] class Metadata { public string Token, AssetID, Email, CreatorName; }
     }
 }
 #endif
