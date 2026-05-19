@@ -235,9 +235,11 @@ namespace Pact.Marketplace
             tex.ReadPixels(new Rect(0, 0, SIZE, SIZE), 0, 0);
             tex.Apply();
 
-            // FIX: Unset active references before cleaning up memory
-            RenderTexture.active = null;
+            // ── THE FIX SEQUENCE: PREVENT MEMORY LEAKS ──
             c.targetTexture = null;
+            RenderTexture.active = null;
+            rt.Release(); // CRITICAL: Releases GPU memory to satisfy Worker1
+            // ─────────────────────────────────────────────
 
             byte[] bytes = tex.EncodeToPNG();
 
