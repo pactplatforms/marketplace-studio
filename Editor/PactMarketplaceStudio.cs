@@ -18,11 +18,6 @@ namespace Pact.Marketplace
         private const string HANDSHAKE_URL = "https://ki26mr9lih.execute-api.us-east-1.amazonaws.com/generate";
 
         [MenuItem("Pact/Marketplace Studio")]
-        public static void ShowWindow()
-        {
-            var window = GetWindow<PactMarketplaceStudio>("Marketplace Studio");
-            window.minSize = new Vector2(420, 320);
-        }       
         public static void ShowWindow() => GetWindow<PactMarketplaceStudio>("Pact Studio");
 
         private void OnGUI()
@@ -32,11 +27,12 @@ namespace Pact.Marketplace
             email = EditorGUILayout.TextField("Creator Email", email);
             creatorName = EditorGUILayout.TextField("Creator Name", creatorName);
 
-            // Back to your original: Uses whatever is selected in the Hierarchy
             if (GUILayout.Button("Build and Publish") && Selection.activeGameObject != null)
             {
                 _ = BuildAndPublish();
             }
+            
+            GUILayout.Space(10);
             GUILayout.Label($"Status: {status}");
         }
 
@@ -52,7 +48,7 @@ namespace Pact.Marketplace
                 triangles += filter.sharedMesh.triangles.Length / 3;
             }
 
-            // 2. Capture Thumbnail (Memory Fix only)
+            // 2. Capture Thumbnail (Memory Safe Fix)
             byte[] thumbBytes = CaptureThumbnail(target);
 
             // 3. Build AssetBundle
@@ -66,7 +62,7 @@ namespace Pact.Marketplace
             BuildPipeline.BuildAssetBundles(bundleDir, buildMap, BuildAssetBundleOptions.None, BuildTarget.iOS);
             byte[] bundleBytes = File.ReadAllBytes(Path.Combine(bundleDir, $"{assetId}.unitybundle"));
 
-            // 4. Handshake & Upload
+            // 4. Execute Handshake and Uploads
             await ExecuteUpload(bundleBytes, thumbBytes, triangles);
         }
 
@@ -88,7 +84,7 @@ namespace Pact.Marketplace
             screenShot.ReadPixels(new Rect(0, 0, res, res), 0, 0);
             screenShot.Apply();
 
-            // --- THE ONLY CHANGE: PREVENT CRASH ---
+            // --- CRITICAL CLEANUP TO PREVENT CRASH ---
             RenderTexture.active = null;
             cam.targetTexture = null;
             
@@ -103,25 +99,38 @@ namespace Pact.Marketplace
 
         private async Task ExecuteUpload(byte[] bundle, byte[] thumb, int tris)
         {
-            using (HttpClient client = new HttpClient())
+            try 
             {
-                var payload = new { assetId, email, creatorName, triangleCount = tris };
-                var response = await client.PostAsync(HANDSHAKE_URL, new StringContent(JsonUtility.ToJson(payload)));
-                var resBody = await response.Content.ReadAsStringAsync();
-                
-                // Assuming you use a JSON wrapper for the response
-                var handshake = JsonUtility.FromJson<HandshakeResponse>(resBody);
+                using (HttpClient client = new HttpClient())
+                {
+                    var payload = new { assetId, email, creatorName, triangleCount = tris };
+                    var jsonPayload = JsonUtility.ToJson(payload);
 
-                await client.PutAsync(handshake.bundleUrl, new ByteArrayContent(bundle));
-                await client.PutAsync(handshake.thumbnailUrl, new ByteArrayContent(thumb));
-                await client.PutAsync(handshake.jsonUrl, new StringContent(JsonUtility.ToJson(payload)));
+                    // A. Handshake
+                    var response = await client.PostAsync(HANDSHAKE_URL, new StringContent(jsonPayload, Encoding.UTF8, "application/json"));
+                    var resBody = await response.Content.ReadAsStringAsync();
+                    var handshake = JsonUtility.FromJson<HandshakeResponse>(resBody);
 
-                status = "Success!";
+                    // B. Multi-part Upload
+                    await client.PutAsync(handshake.bundleUrl, new ByteArrayContent(bundle));
+                    await client.PutAsync(handshake.thumbnailUrl, new ByteArrayContent(thumb));
+                    await client.PutAsync(handshake.jsonUrl, new StringContent(jsonPayload));
+
+                    status = "Success! Check your email.";
+                }
+            }
+            catch (Exception e)
+            {
+                status = "Error: " + e.Message;
+                Debug.LogError(e);
             }
         }
 
-        [Serializable] public class HandshakeResponse { 
-            public string bundleUrl; public string jsonUrl; public string thumbnailUrl; 
+        [Serializable] 
+        public class HandshakeResponse { 
+            public string bundleUrl; 
+            public string jsonUrl; 
+            public string thumbnailUrl; 
         }
     }
 }
