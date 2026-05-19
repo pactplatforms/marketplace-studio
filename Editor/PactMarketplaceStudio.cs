@@ -96,7 +96,6 @@ namespace Pact.Marketplace
                     Directory.Delete(buildPath, true);
                 Directory.CreateDirectory(buildPath);
 
-                // Extension must be .unitybundle — Bouncer filters on this suffix
                 string bundleName = cleanId + ".unitybundle";
 
                 AssetBundleBuild[] buildMap = new AssetBundleBuild[1];
@@ -142,7 +141,6 @@ namespace Pact.Marketplace
                 if (res == null || string.IsNullOrEmpty(res.bundleUrl))
                 {
                     status = "Lambda did not return upload URLs. Check Console.";
-                    Debug.LogError("[PACT] Lambda response was: " + responseJson);
                     return;
                 }
 
@@ -198,8 +196,6 @@ namespace Pact.Marketplace
             }
         }
 
-        // ── Thumbnail capture ─────────────────────────────────────
-
         private byte[] CaptureThumbnail(GameObject prefab)
         {
             const int SIZE = 512;
@@ -232,12 +228,16 @@ namespace Pact.Marketplace
 
             RenderTexture rt  = new RenderTexture(SIZE, SIZE, 24);
             c.targetTexture   = rt;
-            RenderTexture.active = rt;
-
-            Texture2D tex = new Texture2D(SIZE, SIZE, TextureFormat.RGBA32, false);
             c.Render();
+
+            RenderTexture.active = rt;
+            Texture2D tex = new Texture2D(SIZE, SIZE, TextureFormat.RGBA32, false);
             tex.ReadPixels(new Rect(0, 0, SIZE, SIZE), 0, 0);
             tex.Apply();
+
+            // FIX: Unset active references before cleaning up memory
+            RenderTexture.active = null;
+            c.targetTexture = null;
 
             byte[] bytes = tex.EncodeToPNG();
 
@@ -256,8 +256,6 @@ namespace Pact.Marketplace
                 SetLayerRecursively(t.gameObject, l);
         }
 
-        // ── HTTP helpers ──────────────────────────────────────────
-
         private async Task<string> PostRequest(string url, string json)
         {
             using var r = new UnityWebRequest(url, "POST");
@@ -274,11 +272,7 @@ namespace Pact.Marketplace
 
         private async Task UploadFile(string url, byte[] data, string ct)
         {
-            if (string.IsNullOrEmpty(url) || data == null || data.Length == 0)
-            {
-                Debug.LogWarning("[PACT] Skipping upload — empty URL or data.");
-                return;
-            }
+            if (string.IsNullOrEmpty(url) || data == null || data.Length == 0) return;
 
             using var r = UnityWebRequest.Put(url, data);
             r.SetRequestHeader("Content-Type", ct);
@@ -287,8 +281,6 @@ namespace Pact.Marketplace
             if (r.result != UnityWebRequest.Result.Success)
                 Debug.LogError("[PACT] Upload error: " + r.error);
         }
-
-        // ── Data models ───────────────────────────────────────────
 
         [Serializable]
         class RequestPayload
