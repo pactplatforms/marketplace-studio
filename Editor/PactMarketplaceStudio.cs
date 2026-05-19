@@ -18,6 +18,11 @@ namespace Pact.Marketplace
         private const string HANDSHAKE_URL = "https://ki26mr9lih.execute-api.us-east-1.amazonaws.com/generate";
 
         [MenuItem("Pact/Marketplace Studio")]
+        public static void ShowWindow()
+        {
+            var window = GetWindow<PactMarketplaceStudio>("Marketplace Studio");
+            window.minSize = new Vector2(420, 320);
+        }       
         public static void ShowWindow() => GetWindow<PactMarketplaceStudio>("Pact Studio");
 
         private void OnGUI()
