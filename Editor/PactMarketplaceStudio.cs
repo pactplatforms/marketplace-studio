@@ -257,18 +257,20 @@ namespace Pact.Marketplace
                     };
 
                 BuildPipeline.BuildAssetBundles(
-                    buildPath,
-                    builds,
+                buildPath,
+                builds,
 
-                    BuildAssetBundleOptions
-                        .DisableWriteTypeTree |
+                BuildAssetBundleOptions
+                    .DisableWriteTypeTree |
 
-                    BuildAssetBundleOptions
-                        .ChunkBasedCompression,
+                BuildAssetBundleOptions
+                    .ChunkBasedCompression |
 
-                    BuildTarget.iOS
-                );
+                BuildAssetBundleOptions
+                    .ForceRebuildAssetBundle,
 
+                BuildTarget.iOS
+            );
                 string bundlePath =
                     Path.Combine(
                         buildPath,
