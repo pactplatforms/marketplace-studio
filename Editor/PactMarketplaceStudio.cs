@@ -14,14 +14,23 @@ namespace Pact.Marketplace
         private const string LAMBDA_URL =
             "https://73cy1palri.execute-api.us-east-1.amazonaws.com/default/pact-generate_presigned_upload";
 
-        // SNAP-STYLE MOBILE LIMITS
-        private const int MAX_TRIANGLES = 100000;
-        private const int MAX_TEXTURE_SIZE = 2048;
+        // MOBILE-FIRST MARKETPLACE LIMITS
+        private const int   MAX_TRIANGLES      = 100000;
+        private const int   MAX_TEXTURE_SIZE   = 2048;
+        private const int   MAX_MATERIALS      = 10;
         private const float MAX_BUNDLE_SIZE_MB = 50f;
 
-        private string assetId = "quad005";
-        private string userEmail = "";
-        private string creatorName = "";
+        private string[] categories =
+        {
+            "Art", "Fashion", "Furniture", "Architecture", "Gaming",
+            "Animation", "Characters", "Environment", "Vehicles",
+            "Weapons", "Animals", "Vegetation"
+        };
+
+        private string     assetId       = "my_asset";
+        private string     userEmail     = "";
+        private string     creatorName   = "";
+        private int        categoryIndex = 0;
 
         private GameObject targetPrefab;
 
@@ -68,9 +77,17 @@ namespace Pact.Marketplace
                     creatorName
                 );
 
+            categoryIndex =
+                EditorGUILayout.Popup(
+                    "Category",
+                    categoryIndex,
+                    categories
+                );
+
             EditorGUILayout.HelpBox(
                 $"Limits:\n" +
                 $"- Max Triangles: {MAX_TRIANGLES:N0}\n" +
+                $"- Max Materials: {MAX_MATERIALS}\n" +
                 $"- Max Texture Size: {MAX_TEXTURE_SIZE}\n" +
                 $"- Max Bundle Size: {MAX_BUNDLE_SIZE_MB}MB",
                 MessageType.Info
@@ -85,6 +102,14 @@ namespace Pact.Marketplace
                 {
                     _ = BuildAndPublish();
                 }
+                else
+                {
+                    EditorUtility.DisplayDialog(
+                        "Error",
+                        "Check prefab and email",
+                        "OK"
+                    );
+                }
             }
 
             EditorGUILayout.HelpBox(
@@ -97,6 +122,13 @@ namespace Pact.Marketplace
         {
             try
             {
+                string cleanId =
+                    assetId
+                    .ToLower()
+                    .Trim()
+                    .Replace(" ", "_");
+
+                // VALIDATION
                 status = "Validating...";
                 Repaint();
 
@@ -106,26 +138,44 @@ namespace Pact.Marketplace
                 if (triangleCount > MAX_TRIANGLES)
                 {
                     status =
-                        $"Too Many Triangles ({triangleCount:N0})";
+                        $"Too many triangles ({triangleCount:N0}). " +
+                        $"Max is {MAX_TRIANGLES:N0}.";
 
                     Debug.LogError(status);
 
                     return;
                 }
 
-                status = "Optimizing Textures...";
+                int materialCount =
+                    CountMaterials(targetPrefab);
+
+                if (materialCount > MAX_MATERIALS)
+                {
+                    status =
+                        $"Too many materials ({materialCount}). " +
+                        $"Max is {MAX_MATERIALS}.";
+
+                    Debug.LogError(status);
+
+                    return;
+                }
+
+                // TEXTURE OPTIMIZATION
+                status = "Optimizing textures...";
                 Repaint();
 
                 OptimizeTextures();
 
-                string cleanId =
-                    assetId
-                    .ToLower()
-                    .Trim()
-                    .Replace(" ", "_");
+                // THUMBNAIL
+                status = "Rendering thumbnail...";
+                Repaint();
 
                 byte[] thumbBytes =
                     CaptureThumbnail(targetPrefab);
+
+                // BUILD BUNDLE
+                status = "Building bundle...";
+                Repaint();
 
                 string buildPath =
                     Path.Combine(
@@ -154,9 +204,6 @@ namespace Pact.Marketplace
                         )
                     };
 
-                status = "Building Bundle...";
-                Repaint();
-
                 BuildPipeline.BuildAssetBundles(
                     buildPath,
                     builds,
@@ -179,6 +226,15 @@ namespace Pact.Marketplace
                         "asset.unitybundle"
                     );
 
+                if (!File.Exists(bundlePath))
+                {
+                    status =
+                        "Bundle build failed. " +
+                        "Check Console.";
+
+                    return;
+                }
+
                 byte[] bundleBytes =
                     File.ReadAllBytes(bundlePath);
 
@@ -191,36 +247,58 @@ namespace Pact.Marketplace
                     MAX_BUNDLE_SIZE_MB)
                 {
                     status =
-                        $"Bundle Too Large ({bundleSizeMB:F2}MB)";
+                        $"Bundle too large ({bundleSizeMB:F2}MB). " +
+                        $"Max is {MAX_BUNDLE_SIZE_MB}MB.";
 
                     Debug.LogError(status);
 
                     return;
                 }
 
-                status = "Requesting Upload...";
+                // REQUEST PRESIGNED URLS
+                status = "Requesting upload access...";
                 Repaint();
-
-                var payload =
-                    new RequestPayload
-                    {
-                        assetId = cleanId,
-                        email = userEmail,
-                        creatorName = creatorName
-                    };
 
                 string jsonRes =
                     await PostRequest(
                         LAMBDA_URL,
-                        JsonUtility.ToJson(payload)
+
+                        JsonUtility.ToJson(
+                            new RequestPayload
+                            {
+                                assetId = cleanId,
+                                email = userEmail,
+                                creatorName = creatorName
+                            }
+                        )
                     );
+
+                Debug.Log(
+                    "[PACT] Lambda response: " +
+                    jsonRes
+                );
 
                 var res =
                     JsonUtility.FromJson<Response>(
                         jsonRes
                     );
 
-                status = "Uploading Bundle...";
+                if (res == null ||
+                    string.IsNullOrEmpty(res.bundleUrl))
+                {
+                    status =
+                        "Lambda did not return upload URLs.";
+
+                    Debug.LogError(
+                        "[PACT] Lambda response: " +
+                        jsonRes
+                    );
+
+                    return;
+                }
+
+                // UPLOAD BUNDLE
+                status = "Uploading bundle...";
                 Repaint();
 
                 await UploadFile(
@@ -229,53 +307,89 @@ namespace Pact.Marketplace
                     "application/octet-stream"
                 );
 
-                await UploadFile(
-                    res.thumbnailUrl,
-                    thumbBytes,
-                    "image/png"
-                );
+                // UPLOAD THUMBNAIL
+                if (!string.IsNullOrEmpty(
+                    res.thumbnailUrl))
+                {
+                    status = "Uploading thumbnail...";
+                    Repaint();
 
-                var meta =
-                    new Metadata
-                    {
-                        Token = res.token,
-                        AssetID = cleanId,
-                        Email = userEmail,
-                        TriangleCount = triangleCount
-                    };
+                    await UploadFile(
+                        res.thumbnailUrl,
+                        thumbBytes,
+                        "image/png"
+                    );
+                }
+
+                // UPLOAD METADATA
+                status = "Uploading metadata...";
+                Repaint();
 
                 await UploadFile(
                     res.jsonUrl,
+
                     Encoding.UTF8.GetBytes(
-                        JsonUtility.ToJson(meta)
+                        JsonUtility.ToJson(
+                            new Metadata
+                            {
+                                Token = res.token,
+                                AssetID = cleanId,
+                                Email = userEmail,
+                                CreatorName = creatorName,
+                                Category =
+                                    categories[categoryIndex],
+
+                                TriangleCount =
+                                    triangleCount
+                            }
+                        )
                     ),
+
                     "application/json"
                 );
 
-                status = "SUCCESS";
+                status =
+                    $"SUCCESS — check {userEmail} " +
+                    $"for verification.";
+
                 Repaint();
 
                 Debug.Log(
-                    $"Uploaded {cleanId} | " +
+                    $"[PACT] Published {cleanId} | " +
                     $"{triangleCount:N0} tris | " +
+                    $"{materialCount} mats | " +
                     $"{bundleSizeMB:F2}MB"
+                );
+
+                EditorUtility.DisplayDialog(
+                    "PACT Marketplace Studio",
+
+                    $"Asset '{cleanId}' uploaded.\n" +
+                    $"Check {userEmail} for the verification email.",
+
+                    "OK"
                 );
             }
             catch (Exception e)
             {
+                status = "Error: " + e.Message;
+
                 Debug.LogError(e);
-                status = "ERROR";
+
+                Repaint();
             }
         }
+
+        // ─────────────────────────────────────
+        // VALIDATION
+        // ─────────────────────────────────────
 
         private int CountTriangles(GameObject prefab)
         {
             int total = 0;
 
-            MeshFilter[] meshes =
-                prefab.GetComponentsInChildren<MeshFilter>(true);
-
-            foreach (var mf in meshes)
+            // STATIC MESHES
+            foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (mf.sharedMesh != null)
                 {
@@ -284,42 +398,117 @@ namespace Pact.Marketplace
                 }
             }
 
+            // SKINNED MESHES
+            foreach (var smr in prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (smr.sharedMesh != null)
+                {
+                    total +=
+                        smr.sharedMesh.triangles.Length / 3;
+                }
+            }
+
             return total;
         }
 
+        private int CountMaterials(GameObject prefab)
+        {
+            int total = 0;
+
+            Renderer[] renderers =
+                prefab.GetComponentsInChildren<Renderer>(true);
+
+            foreach (Renderer r in renderers)
+            {
+                total +=
+                    r.sharedMaterials.Length;
+            }
+
+            return total;
+        }
+
+        // ─────────────────────────────────────
+        // TEXTURE OPTIMIZATION
+        // ─────────────────────────────────────
+
         private void OptimizeTextures()
         {
-            string[] guids =
-                AssetDatabase.FindAssets("t:Texture2D");
+            if (targetPrefab == null)
+                return;
 
-            foreach (string guid in guids)
+            Renderer[] renderers =
+                targetPrefab.GetComponentsInChildren<Renderer>(true);
+
+            foreach (Renderer r in renderers)
             {
-                string path =
-                    AssetDatabase.GUIDToAssetPath(guid);
+                foreach (Material mat in r.sharedMaterials)
+                {
+                    if (mat == null)
+                        continue;
 
-                TextureImporter importer =
-                    AssetImporter.GetAtPath(path)
-                    as TextureImporter;
+                    string[] textureProps =
+                        mat.GetTexturePropertyNames();
 
-                if (importer == null)
-                    continue;
+                    foreach (string prop in textureProps)
+                    {
+                        Texture tex =
+                            mat.GetTexture(prop);
 
-                importer.maxTextureSize =
-                    MAX_TEXTURE_SIZE;
+                        if (tex == null)
+                            continue;
 
-                importer.textureCompression =
-                    TextureImporterCompression.Compressed;
+                        string path =
+                            AssetDatabase.GetAssetPath(tex);
 
-                importer.mipmapEnabled = true;
+                        TextureImporter importer =
+                            AssetImporter.GetAtPath(path)
+                            as TextureImporter;
 
-                importer.SaveAndReimport();
+                        if (importer == null)
+                            continue;
+
+                        bool changed = false;
+
+                        if (importer.maxTextureSize >
+                            MAX_TEXTURE_SIZE)
+                        {
+                            importer.maxTextureSize =
+                                MAX_TEXTURE_SIZE;
+
+                            changed = true;
+                        }
+
+                        if (importer.textureCompression !=
+                            TextureImporterCompression.Compressed)
+                        {
+                            importer.textureCompression =
+                                TextureImporterCompression.Compressed;
+
+                            changed = true;
+                        }
+
+                        if (!importer.mipmapEnabled)
+                        {
+                            importer.mipmapEnabled = true;
+                            changed = true;
+                        }
+
+                        if (changed)
+                        {
+                            importer.SaveAndReimport();
+                        }
+                    }
+                }
             }
         }
 
+        // ─────────────────────────────────────
+        // THUMBNAIL
+        // ─────────────────────────────────────
+
         private byte[] CaptureThumbnail(GameObject prefab)
         {
-            RenderTexture rt =
-                new RenderTexture(512, 512, 24);
+            const int SIZE = 512;
 
             GameObject root =
                 new GameObject("ThumbRoot");
@@ -332,54 +521,112 @@ namespace Pact.Marketplace
                     root.transform
                 );
 
-            p.layer = 31;
+            SetLayerRecursively(p, 31);
+
+            Renderer[] rs =
+                p.GetComponentsInChildren<Renderer>();
+
+            if (rs.Length == 0)
+            {
+                DestroyImmediate(root);
+                return new byte[0];
+            }
+
+            Bounds b = rs[0].bounds;
+
+            foreach (Renderer r in rs)
+            {
+                b.Encapsulate(r.bounds);
+            }
+
+            GameObject camObj =
+                new GameObject("ThumbCam");
 
             Camera cam =
-                new GameObject("ThumbCam")
-                .AddComponent<Camera>();
+                camObj.AddComponent<Camera>();
 
-            cam.targetTexture = rt;
-            cam.cullingMask = 1 << 31;
+            cam.backgroundColor =
+                new Color(0, 0, 0, 0);
+
+            cam.clearFlags =
+                CameraClearFlags.SolidColor;
+
+            cam.cullingMask =
+                1 << 31;
+
+            float rad =
+                b.extents.magnitude;
 
             cam.transform.position =
-                new Vector3(0, 0, -3);
+                b.center +
+                new Vector3(-1, 0.6f, -1)
+                .normalized *
+                (rad * 2.2f);
 
-            cam.Render();
+            cam.transform.LookAt(b.center);
+
+            RenderTexture rt =
+                new RenderTexture(
+                    SIZE,
+                    SIZE,
+                    24
+                );
+
+            cam.targetTexture = rt;
 
             RenderTexture.active = rt;
 
             Texture2D tex =
                 new Texture2D(
-                    512,
-                    512,
+                    SIZE,
+                    SIZE,
                     TextureFormat.RGBA32,
                     false
                 );
 
+            cam.Render();
+
             tex.ReadPixels(
-                new Rect(0, 0, 512, 512),
+                new Rect(0, 0, SIZE, SIZE),
                 0,
                 0
             );
 
             tex.Apply();
 
+            byte[] bytes =
+                tex.EncodeToPNG();
+
             cam.targetTexture = null;
 
             RenderTexture.active = null;
 
-            rt.Release();
-
-            byte[] b =
-                tex.EncodeToPNG();
-
             DestroyImmediate(rt);
             DestroyImmediate(tex);
-            DestroyImmediate(cam.gameObject);
+            DestroyImmediate(camObj);
             DestroyImmediate(root);
 
-            return b;
+            return bytes;
         }
+
+        private void SetLayerRecursively(
+            GameObject o,
+            int l)
+        {
+            o.layer = l;
+
+            foreach (Transform t in o.transform)
+            {
+                SetLayerRecursively(
+                    t.gameObject,
+                    l
+                );
+            }
+        }
+
+        // ─────────────────────────────────────
+        // NETWORKING
+        // ─────────────────────────────────────
 
         private async Task<string> PostRequest(
             string url,
@@ -417,6 +664,17 @@ namespace Pact.Marketplace
             byte[] data,
             string ct)
         {
+            if (string.IsNullOrEmpty(url) ||
+                data == null ||
+                data.Length == 0)
+            {
+                Debug.LogWarning(
+                    "[PACT] Skipping upload — empty URL or data."
+                );
+
+                return;
+            }
+
             using var r =
                 UnityWebRequest.Put(url, data);
 
@@ -433,6 +691,10 @@ namespace Pact.Marketplace
                 throw new Exception(r.error);
             }
         }
+
+        // ─────────────────────────────────────
+        // DATA MODELS
+        // ─────────────────────────────────────
 
         [Serializable]
         class RequestPayload
@@ -457,6 +719,8 @@ namespace Pact.Marketplace
             public string Token;
             public string AssetID;
             public string Email;
+            public string CreatorName;
+            public string Category;
 
             public int TriangleCount;
         }
